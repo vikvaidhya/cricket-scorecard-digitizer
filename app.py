@@ -9,11 +9,18 @@ st.set_page_config(layout="wide", page_title="Cricket Scorecard OCR Tester")
 st.title("🏏 Paper Scorecard Digitizer & Reconstruction Engine")
 st.write("Upload a handwritten scorecard picture to digitize and validate match statistics.")
 
-# Sidebar for Gemini API Key
-raw_api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
-uploaded_file = st.file_uploader("Upload Scorecard Image (PNG/JPG)", type=["png", "jpg", "jpeg"])
+# --- API KEY SECRETS HANDLING ---
+# 1. Check if GEMINI_API_KEY exists in Streamlit Cloud Secrets
+api_key = st.secrets.get("GEMINI_API_KEY", None)
 
-api_key = raw_api_key.strip().strip('"').strip("'") if raw_api_key else ""
+# 2. If not found in Secrets, show the sidebar input box as a fallback
+if not api_key:
+    raw_api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+    api_key = raw_api_key.strip().strip('"').strip("'") if raw_api_key else ""
+else:
+    st.sidebar.success("🔑 Gemini API Key loaded automatically from Secrets!")
+
+uploaded_file = st.file_uploader("Upload Scorecard Image (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
 if uploaded_file and api_key:
     try:
@@ -28,46 +35,14 @@ if uploaded_file and api_key:
             
         if st.button("Extract & Reconstruct Scorecard"):
             with st.spinner("Analyzing scorecard and calculating match stats..."):
-                # Use standard gemini-3.7-flash model
-                model = genai.GenerativeModel('gemini-3.7-flash')
+                model = genai.GenerativeModel('gemini-1.5-flash')
                 
                 prompt = """
-                You are an expert cricket scorekeeper. Analyze this handwritten scorecard image carefully.
-                Cross-reference the Batting table, Bowling table, Extras, and the bottom Over-by-Over Matrix to produce a clean JSON dataset.
-
-                Return strict raw JSON matching this schema:
-                {
-                    "match_details": {
-                        "home_club": "Spartans",
-                        "visitor_club": "Indus",
-                        "ground": "Spartans Ground",
-                        "total_runs": 235,
-                        "wickets": 8
-                    },
-                    "batting": [
-                        {"position": 1, "batter_name": "Ruthvik", "how_out": "Bowled", "bowler": "Deepak", "fielder": null, "runs": 0, "balls": 2},
-                        {"position": 2, "batter_name": "Maulin", "how_out": "Caught", "bowler": "Kedar", "fielder": "Sidharth", "runs": 7, "balls": 18},
-                        {"position": 3, "batter_name": "Harsh", "how_out": "Caught", "bowler": "Kedar", "fielder": "Anand", "runs": 27, "balls": 28},
-                        {"position": 4, "batter_name": "Shankara", "how_out": "Run Out", "bowler": null, "fielder": "Kedar", "runs": 89, "balls": 92},
-                        {"position": 5, "batter_name": "Arawind", "how_out": "Caught", "bowler": "Akshay", "fielder": "Chinmay", "runs": 61, "balls": 71},
-                        {"position": 6, "batter_name": "Shailesh", "how_out": "LBW", "bowler": "Kedar", "fielder": null, "runs": 12, "balls": 23},
-                        {"position": 7, "batter_name": "Srikantan", "how_out": "Caught", "bowler": "Kedar", "fielder": "Vivek", "runs": 13, "balls": 14},
-                        {"position": 8, "batter_name": "Vishnu", "how_out": "LBW", "bowler": "Kedar", "fielder": null, "runs": 3, "balls": 5},
-                        {"position": 9, "batter_name": "Niraj", "how_out": "Not Out", "bowler": null, "fielder": null, "runs": 0, "balls": 3},
-                        {"position": 10, "batter_name": "Nilchil", "how_out": "Not Out", "bowler": null, "fielder": null, "runs": 10, "balls": 11},
-                        {"position": 11, "batter_name": "Hasu", "how_out": "Did Not Bat", "bowler": null, "fielder": null, "runs": 0, "balls": 0}
-                    ],
-                    "bowling": [
-                        {"position": 1, "bowler_name": "Deepak", "overs": 9.0, "maidens": 1, "runs_conceded": 39, "wickets": 1},
-                        {"position": 2, "bowler_name": "Kedar", "overs": 9.0, "maidens": 1, "runs_conceded": 36, "wickets": 5},
-                        {"position": 3, "bowler_name": "Akshay", "overs": 9.0, "maidens": 0, "runs_conceded": 49, "wickets": 1},
-                        {"position": 4, "bowler_name": "Anand", "overs": 9.0, "maidens": 0, "runs_conceded": 44, "wickets": 0},
-                        {"position": 5, "bowler_name": "Shiva", "overs": 3.0, "maidens": 0, "runs_conceded": 20, "wickets": 0},
-                        {"position": 6, "bowler_name": "Shidarth", "overs": 4.0, "maidens": 0, "runs_conceded": 23, "wickets": 0},
-                        {"position": 7, "bowler_name": "Chinmay", "overs": 2.0, "maidens": 0, "runs_conceded": 23, "wickets": 0}
-                    ]
-                }
-                Return ONLY raw JSON. No markdown backticks, no explanatory prose.
+                Extract this handwritten cricket scorecard into strict JSON format with keys:
+                - 'match_details': {home_club, visitor_club, total_runs, wickets}
+                - 'batting': list of {position, batter_name, runs, balls, how_out, bowler, fielder}
+                - 'bowling': list of {position, bowler_name, overs, maidens, runs_conceded, wickets}
+                Return ONLY raw JSON, no markdown formatting or extra text.
                 """
                 
                 response = model.generate_content([prompt, image])
@@ -83,11 +58,10 @@ if uploaded_file and api_key:
                     df_bat = pd.DataFrame(data.get("batting", []))
                     df_bowl = pd.DataFrame(data.get("bowling", []))
                     
-                    # Safe numeric conversions (fill missing values with 0)
+                    # Safe numeric conversions
                     if not df_bat.empty:
                         df_bat["runs"] = pd.to_numeric(df_bat["runs"], errors="coerce").fillna(0).astype(int)
                         df_bat["balls"] = pd.to_numeric(df_bat["balls"], errors="coerce").fillna(0).astype(int)
-                        # Compute Strike Rate dynamically
                         df_bat["strike_rate"] = df_bat.apply(
                             lambda row: round((row["runs"] / row["balls"] * 100), 2) if row["balls"] > 0 else 0.0, axis=1
                         )
@@ -102,20 +76,11 @@ if uploaded_file and api_key:
                     st.markdown("### Bowling Performance")
                     st.dataframe(df_bowl, use_container_width=True)
                     
-                    # Data Audit Check
-                    total_bat_runs = df_bat['runs'].sum() if not df_bat.empty else 0
-                    total_bowl_runs = df_bowl['runs_conceded'].sum() if not df_bowl.empty else 0
-                    
-                    st.markdown("---")
-                    st.markdown("### Reconciliation Audit")
-                    st.write(f"**Total Batting Runs:** {total_bat_runs}")
-                    st.write(f"**Total Bowling Conceded:** {total_bowl_runs}")
-                    
                     st.download_button(
                         label="Download Clean JSON File",
                         data=json.dumps(data, indent=4),
-                        file_name="scorecard_reconstructed.json",
+                        file_name="scorecard_output.json",
                         mime="application/json"
                     )
     except Exception as e:
-        st.error(f"Error executing API call or parsing data: {e}")
+        st.error(f"Error executing API call: {e}")
