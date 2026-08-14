@@ -35,7 +35,7 @@ if uploaded_file and api_key:
             
         if st.button("Extract & Reconstruct Scorecard"):
             with st.spinner("Analyzing scorecard and calculating match stats..."):
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel('gemini-2.5-pro')
                 
                 prompt = """
                 Extract this handwritten cricket scorecard into strict JSON format with keys:
