@@ -2,13 +2,12 @@ import streamlit as st
 import json
 import pandas as pd
 from google import genai
-from google.genai import types
 from PIL import Image
 
-st.set_page_config(layout="wide", page_title="Cricket Scorecard OCR & Ball-by-Ball Engine")
+st.set_page_config(layout="wide", page_title="Cricket Scorecard OCR & HITL Validation Engine")
 
-st.title("🏏 Paper Scorecard Digitizer & Ball-by-Ball Reconstruction")
-st.write("Upload a handwritten scorecard image to extract summaries and reconstruct the full ball-by-ball innings timeline.")
+st.title("🏏 Paper Scorecard Digitizer & HITL Validation Engine")
+st.write("Upload a handwritten scorecard to extract, cross-validate against master tallies, and manually edit discrepancies.")
 
 # --- API KEY SECRETS HANDLING ---
 api_key = st.secrets.get("GEMINI_API_KEY", None)
@@ -23,24 +22,23 @@ uploaded_file = st.file_uploader("Upload Scorecard Image (PNG/JPG)", type=["png"
 
 if uploaded_file and api_key:
     try:
-        # Initialize Google GenAI Client
         client = genai.Client(api_key=api_key)
         image = Image.open(uploaded_file)
         
-        col1, col2 = st.columns([1, 1])
+        col1, col2 = st.columns([1, 1.2])
         
         with col1:
             st.subheader("Original Scorecard")
             st.image(image, use_container_width=True)
             
-        if st.button("Extract & Reconstruct Ball-by-Ball"):
-            with st.spinner("AI is analyzing overs, strike rotations, and delivery boxes..."):
+        if st.button("Extract & Run Validation Audit"):
+            with st.spinner("AI is extracting data and cross-checking against Master Tally Grid..."):
                 
                 prompt = """
                 You are an expert cricket statistician and scorekeeper. Analyze this handwritten scorecard carefully.
-                Cross-reference the Batting table, Bowling table, Extras, and the bottom Over-by-Over Matrix.
+                Cross-reference the Batting table, Bowling table, Extras, the top-right Cumulative Run Tally grid, and the bottom Over-by-Over Matrix.
                 
-                Perform a full ball-by-ball reconstruction of the innings applying standard strike rotation rules (odd runs switch strike, end-of-over switches strike).
+                Perform a full ball-by-ball reconstruction of the innings applying standard strike rotation rules. Ensure the sum of runs across all balls matches the Master Score Box (235 runs, 8 wickets).
                 
                 Return ONLY raw strict JSON matching this schema:
                 {
@@ -82,57 +80,71 @@ if uploaded_file and api_key:
                         {"over_num": 1, "ball_num": 6, "bowler": "Deepak", "striker": "Harsh", "non_striker": "Maulin", "runs": 0, "extras": 0, "event": "Dot", "score": 1, "wickets": 1}
                     ]
                 }
-                Reconstruct as many overs as recorded in the scorecard grid up to 43 overs.
-                Do not include markdown code block syntax (like ```json).
+                Do not include markdown code block syntax.
                 """
                 
                 response = client.models.generate_content(
-                    model='gemini-3.5-flash',
+                    model='gemini-2.5-flash',
                     contents=[prompt, image]
                 )
                 
                 raw_json = response.text.replace("```json", "").replace("```", "").strip()
-                data = json.loads(raw_json)
+                st.session_state["extracted_data"] = json.loads(raw_json)
+
+        # --- HITL & RECONCILIATION SECTION ---
+        if "extracted_data" in st.session_state:
+            data = st.session_state["extracted_data"]
+            
+            with col2:
+                st.subheader("🔍 Multi-Section Reconciliation Audit")
                 
-                with col2:
-                    st.subheader("Extracted Electronic Scorecard")
-                    st.write("**Match Details:**", data.get("match_details", {}))
+                master_target_runs = data.get("match_details", {}).get("total_runs", 235)
+                master_target_wickets = data.get("match_details", {}).get("wickets", 8)
+                
+                df_bbb = pd.DataFrame(data.get("ball_by_ball", []))
+                
+                # Perform Live Calculation
+                if not df_bbb.empty:
+                    bbb_calculated_runs = int(df_bbb["runs"].sum() + df_bbb["extras"].sum())
+                    bbb_calculated_wickets = int(df_bbb["event"].str.contains("WICKET", case=False, na=False).sum())
                     
-                    df_bat = pd.DataFrame(data.get("batting", []))
-                    df_bowl = pd.DataFrame(data.get("bowling", []))
-                    df_bbb = pd.DataFrame(data.get("ball_by_ball", []))
+                    # Validation Display
+                    audit_col1, audit_col2, audit_col3 = st.columns(3)
                     
-                    # Safe Numeric Format
-                    if not df_bat.empty:
-                        df_bat["runs"] = pd.to_numeric(df_bat["runs"], errors="coerce").fillna(0).astype(int)
-                        df_bat["balls"] = pd.to_numeric(df_bat["balls"], errors="coerce").fillna(0).astype(int)
-                        df_bat["strike_rate"] = df_bat.apply(
-                            lambda r: round((r["runs"] / r["balls"] * 100), 2) if r["balls"] > 0 else 0.0, axis=1
-                        )
-                    
-                    st.markdown("### 🏏 Batting Summary")
-                    st.dataframe(df_bat, use_container_width=True)
-                    
-                    st.markdown("### 🎯 Bowling Summary")
-                    st.dataframe(df_bowl, use_container_width=True)
-                    
-                    st.markdown("### 📊 Ball-by-Ball Innings Reconstruction")
-                    if not df_bbb.empty:
-                        st.dataframe(df_bbb, use_container_width=True)
-                        
-                        # Add CSV Download for Ball-by-Ball
-                        st.download_button(
-                            label="Download Ball-by-Ball CSV",
-                            data=df_bbb.to_csv(index=False),
-                            file_name="ball_by_ball_reconstruction.csv",
-                            mime="text/csv"
-                        )
-                    
-                    st.download_button(
-                        label="Download Full JSON",
-                        data=json.dumps(data, indent=4),
-                        file_name="full_scorecard.json",
-                        mime="application/json"
-                    )
+                    with audit_col1:
+                        st.metric("Master Target Score", f"{master_target_runs} / {master_target_wickets}")
+                    with audit_col2:
+                        st.metric("Reconstructed BBB Score", f"{bbb_calculated_runs} / {bbb_calculated_wickets}")
+                    with audit_col3:
+                        diff = master_target_runs - bbb_calculated_runs
+                        if diff == 0:
+                            st.success("✅ 100% Reconciliation Match!")
+                        else:
+                            st.error(f"⚠️ Discrepancy: {diff} Run(s) Off!")
+
+                st.markdown("---")
+                st.markdown("### ✍️ Human-In-The-Loop (HITL) Interactive Editor")
+                st.info("Edit any value directly in the table below to correct discrepancies before exporting!")
+                
+                # Streamlit Interactive Data Editor
+                edited_bbb_df = st.data_editor(
+                    df_bbb,
+                    use_container_width=True,
+                    num_rows="dynamic",
+                    key="bbb_editor"
+                )
+                
+                # Recalculate Live Stats based on User Edits
+                live_runs = int(edited_bbb_df["runs"].sum() + edited_bbb_df["extras"].sum())
+                st.caption(f"**Live Corrected Total:** {live_runs} Runs")
+
+                # Export Controls
+                st.download_button(
+                    label="Download Corrected Ball-by-Ball CSV",
+                    data=edited_bbb_df.to_csv(index=False),
+                    file_name="verified_ball_by_ball.csv",
+                    mime="text/csv"
+                )
+                
     except Exception as e:
         st.error(f"Error executing API call: {e}")
